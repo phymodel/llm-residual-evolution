@@ -1,116 +1,116 @@
-# 三维设计空间正交矩阵
+# 3D Orthogonal Design-Space Matrix
 
-> 所有残差方案都可以映射到三个独立维度的组合。本矩阵记录了每个格点的探索状态。
-
----
-
-## 三个正交维度
-
-### 维度一：传递范围
-
-残差信号的来源范围——从"只看上一层"到"看所有前层"。
-
-| 取值 | 符号 | 含义 | 复杂度 |
-|:---|:---|:---|:---:|
-| 邻层 | L1 | 只接收第 k-1 层的输出 | O(1) |
-| 块内 | L-Block | 在同一 Block 内部操作（拼接/投影） | O(1) |
-| 全局注意力 | L-All | 对所有前层输出做 softmax 注意力 | O(L²) / O(B²) |
-| 全局分块 | L-Block | Block 间做注意力，Block 内做局部聚合 | O(B²) |
-| 全局树状 | L-Tree | 多级分层聚合，O(log L) 深度 | O(L) |
-| 全局递归 | L-SSM | SSM 按深度顺序递归累积 | O(L) |
-
-### 维度二：信息粒度
-
-每层暴露给后续层的信息丰富度——从"只有一个最终输出"到"多个中间状态"。
-
-| 取值 | 符号 | 含义 | 每层信息量 |
-|:---|:---|:---|:---:|
-| 单一输出 | G1 | 只暴露 Block 的最终输出 h_k | d |
-| 标量缩放 | G-scale | 暴露输出 + 一个可学习标量 α | d + 1 |
-| 输入+输出组 | G2 | 暴露 cat(x_in, sub_out) | 2d |
-| 多阶段组 | G-N | 暴露多个中间状态（norm 后、attn 后、ffn 后等） | N·d |
-| 压缩组 | G-compress | 暴露压缩后的"组 key" + 完整"组 value" | r + N·d (r << d) |
-
-### 维度三：权重策略
-
-如何决定残差信号的混合比例——从"永远是 1.0"到"基于内容的注意力选择"。
-
-| 取值 | 符号 | 含义 | 可解释性 |
-|:---|:---|:---|:---:|
-| 固定标量 | W-1 | 权重恒为 1.0 | 高 |
-| 可学习标量 | W-α | 每层一个可学习标量 α | 高（可查看 α 值） |
-| 拼接+投影 | W-concat | Linear(Concat(...)) | 低（权重在矩阵中） |
-| 内容注意力 | W-attn | softmax(Q·K/√d) 逐 token 决定 | 中（可查看 attention map） |
-| 稀疏路由 | W-topk | Top-K hard selection | 中（可查看被选中的层） |
-| 门控递归 | W-gate | 门控机制（如 SSM 的 selective scan）| 低-中 |
+> All residual schemes can be mapped onto combinations of three independent dimensions. This matrix records the exploration status of each grid point.
 
 ---
 
-## 核心矩阵
+## Three Orthogonal Dimensions
 
-行 = 传递范围，列 = 信息粒度，格内 = 权重策略
+### Dimension 1: Transmission scope
 
-> ✅ = 已有工作填充  
-> 🔶 = Block AttnRes 已部分探索  
-> ❓ = 理论上可行但尚未被提出（推演候选）  
-> ❌ = 物理/逻辑上不可行
+The source range of the residual signal — from "looking only at the previous layer" to "looking at all prior layers".
 
-| 传递范围 ↓ \ 信息粒度 → | G1 单一输出 | G-scale 标量缩放 | G2 输入+输出组 | G-N 多阶段组 | G-compress 压缩组 |
+| Value | Symbol | Meaning | Complexity |
+|:---|:---|:---|:---:|
+| Adjacent layer | L1 | Only receives the output of layer k-1 | O(1) |
+| Within block | L-Block | Operates inside the same Block (concat / projection) | O(1) |
+| Global attention | L-All | Softmax attention over all prior-layer outputs | O(L²) / O(B²) |
+| Global blocked | L-Block | Attention across Blocks, local aggregation within a Block | O(B²) |
+| Global tree | L-Tree | Multi-level hierarchical aggregation, O(log L) depth | O(L) |
+| Global recurrent | L-SSM | SSM accumulates recursively along depth order | O(L) |
+
+### Dimension 2: Information granularity
+
+The richness of information each layer exposes to later layers — from "only one final output" to "multiple intermediate states".
+
+| Value | Symbol | Meaning | Info per layer |
+|:---|:---|:---|:---:|
+| Single output | G1 | Only exposes the Block's final output h_k | d |
+| Scalar scaling | G-scale | Exposes output + one learnable scalar α | d + 1 |
+| Input+output group | G2 | Exposes cat(x_in, sub_out) | 2d |
+| Multi-stage group | G-N | Exposes multiple intermediate states (post-norm, post-attn, post-ffn, etc.) | N·d |
+| Compressed group | G-compress | Exposes a compressed "group key" + full "group value" | r + N·d (r << d) |
+
+### Dimension 3: Weighting strategy
+
+How the mixing ratio of residual signals is decided — from "always 1.0" to "content-based attention selection".
+
+| Value | Symbol | Meaning | Interpretability |
+|:---|:---|:---|:---:|
+| Fixed scalar | W-1 | Weight always 1.0 | High |
+| Learnable scalar | W-α | One learnable scalar α per layer | High (α value inspectable) |
+| Concat + projection | W-concat | Linear(Concat(...)) | Low (weights inside the matrix) |
+| Content attention | W-attn | softmax(Q·K/√d) decided per token | Medium (attention map inspectable) |
+| Sparse routing | W-topk | Top-K hard selection | Medium (selected layers inspectable) |
+| Gated recurrent | W-gate | Gating mechanism (e.g. SSM selective scan) | Low–Medium |
+
+---
+
+## Core Matrix
+
+Rows = transmission scope, columns = information granularity, cells = weighting strategy
+
+> ✅ = already filled by existing work
+> 🔶 = Block AttnRes partially explored
+> ❓ = theoretically feasible but not yet proposed (inference candidates)
+> ❌ = physically / logically infeasible
+
+| Transmission scope ↓ \ Information granularity → | G1 single output | G-scale scalar scaling | G2 input+output group | G-N multi-stage group | G-compress compressed group |
 |:---|:---:|:---:|:---:|:---:|:---:|
-| **L1 邻层** | ✅ Pre-LN (W-1) | ✅ ReZero (W-α) | ❓ | ❓ | ❌ |
-| **L-Block 块内** | — | — | ✅ HC (W-concat) / ✅ mHC (W-concat+norm) | ❓ | ❌ |
-| **L-All 全局注意力** | ✅ AttnRes (W-attn) | ❌ | **❓ AttnGroup** | **❓ AttnGroup-N** | **❓ AttnGroup+MLA** |
-| **L-Block 全局分块** | 🔶 Block AttnRes (W-attn) | ❌ | ❓ | ❓ | ❓ |
-| **L-Tree 全局树状** | ❌ | ❌ | ❓ | ❓ | **❓ TreeAttn+MLA** |
-| **L-SSM 全局递归** | **❓ SSM-Depth** (W-gate) | ❌ | ❓ | ❓ | **❓ SSM-Depth+MLA** |
+| **L1 adjacent layer** | ✅ Pre-LN (W-1) | ✅ ReZero (W-α) | ❓ | ❓ | ❌ |
+| **L-Block within block** | — | — | ✅ HC (W-concat) / ✅ mHC (W-concat+norm) | ❓ | ❌ |
+| **L-All global attention** | ✅ AttnRes (W-attn) | ❌ | **❓ AttnGroup** | **❓ AttnGroup-N** | **❓ AttnGroup+MLA** |
+| **L-Block global blocked** | 🔶 Block AttnRes (W-attn) | ❌ | ❓ | ❓ | ❓ |
+| **L-Tree global tree** | ❌ | ❌ | ❓ | ❓ | **❓ TreeAttn+MLA** |
+| **L-SSM global recurrent** | **❓ SSM-Depth** (W-gate) | ❌ | ❓ | ❓ | **❓ SSM-Depth+MLA** |
 
 ---
 
-## 空白格点详解
+## Blank Grid Point Details
 
-以下是矩阵中标记 ❓ 的关键空白格点：
+The following are the key blank grid points marked ❓ in the matrix:
 
-### A 类：直接正交杂交（高可行性）
+### Class A: Direct orthogonal hybridization (high feasibility)
 
-这些格点是将已存在的维度取值直接交叉组合，不依赖新技术突破。
+These grid points directly cross-combine existing dimension values, without depending on new technical breakthroughs.
 
-| 编号 | 格点坐标 | 方案名 | 组合来源 |
+| No. | Grid coordinates | Scheme name | Combination source |
 |:---|:---|:---|:---|
-| A1 | (L-All, G2, W-attn) | AttnGroup | HC 的组信号 + AttnRes 的全局注意力 |
-| A2 | (L-All, G-N, W-attn) | AttnGroup-N | HC 的多阶段 + AttnRes 的全局注意力 |
-| A3 | (L-Block, G-N, W-concat) | HC-MultiStage | HC 扩大拼接范围到多个中间状态 |
+| A1 | (L-All, G2, W-attn) | AttnGroup | HC's group signal + AttnRes's global attention |
+| A2 | (L-All, G-N, W-attn) | AttnGroup-N | HC's multi-stage + AttnRes's global attention |
+| A3 | (L-Block, G-N, W-concat) | HC-MultiStage | HC expanding concat range to multiple intermediate states |
 
-### B 类：压缩引入（高可行性）
+### Class B: Compression introduction (high feasibility)
 
-将 MLA 压缩思想引入深度维度。
+Introducing MLA compression into the depth dimension.
 
-| 编号 | 格点坐标 | 方案名 | 关键机理 |
+| No. | Grid coordinates | Scheme name | Key mechanism |
 |:---|:---|:---|:---|
-| B1 | (L-All, G-compress, W-attn) | AttnGroup+MLA | 组 key 压缩到 r 维，组 value 保持完整 |
-| B2 | (L-Tree, G-compress, W-attn) | TreeAttn+MLA | 分层聚合 + 压缩组 |
+| B1 | (L-All, G-compress, W-attn) | AttnGroup+MLA | Group key compressed to r dims, group value kept full |
+| B2 | (L-Tree, G-compress, W-attn) | TreeAttn+MLA | Hierarchical aggregation + compressed group |
 
-### C 类：权重策略升级（中可行性）
+### Class C: Weighting strategy upgrade (medium feasibility)
 
-用更激进的权重策略替代 softmax attention。
+Replace softmax attention with more aggressive weighting strategies.
 
-| 编号 | 格点坐标 | 方案名 | 关键机理 |
+| No. | Grid coordinates | Scheme name | Key mechanism |
 |:---|:---|:---|:---|
-| C1 | (L-All, G1, W-topk) | Sparse Depth Routing | 只选择 Top-K 前层做硬路由 |
-| C2 | (L-SSM, G1, W-gate) | SSM-Depth | 用选择性状态空间模型做深度递归累积 |
-| C3 | (L-SSM, G-compress, W-gate) | SSM-Depth+MLA | SSM 递归 + 压缩组表示 |
+| C1 | (L-All, G1, W-topk) | Sparse Depth Routing | Hard-route by selecting only Top-K prior layers |
+| C2 | (L-SSM, G1, W-gate) | SSM-Depth | Depth-recursive accumulation via selective state-space model |
+| C3 | (L-SSM, G-compress, W-gate) | SSM-Depth+MLA | SSM recursion + compressed group representation |
 
-### D 类：跨体系融合（较低可行性，需要基础创新）
+### Class D: Cross-paradigm fusion (lower feasibility, requires foundational innovation)
 
-| 编号 | 格点坐标 | 方案名 | 关键机理 |
+| No. | Grid coordinates | Scheme name | Key mechanism |
 |:---|:---|:---|:---|
-| D1 | (L-All, G1, W-attn+MoE) | AttnRes+MoE | 深度路由 × 宽度路由共享 router |
-| D2 | (L-All, G-N, W-learned-skip) | Conditional Depth | 可学习的跳过决策 + 组信号 |
+| D1 | (L-All, G1, W-attn+MoE) | AttnRes+MoE | Depth routing × width routing sharing a router |
+| D2 | (L-All, G-N, W-learned-skip) | Conditional Depth | Learnable skip decisions + group signals |
 
 ---
 
-## 如何阅读此矩阵
+## How to Read This Matrix
 
-1. **找最亮的区域** — 已探索格点集中的区域（左上角）是当前主流
-2. **找最空的区域** — 带 ❓ 的格点是推演目标
-3. **对角线方向** — 从左上到右下：同时升级两个以上维度的组合几乎完全未探索
-4. **边界格点** — L-SSM 行和 G-compress 列是最新的维度取值，与其他维度的交叉几乎是全空的
+1. **Find the brightest region** — the area where explored grid points concentrate (top-left) is the current mainstream
+2. **Find the emptiest region** — grid points with ❓ are the inference targets
+3. **Diagonal direction** — from top-left to bottom-right: combinations upgrading two or more dimensions at once are almost entirely unexplored
+4. **Boundary grid points** — the L-SSM row and G-compress column are the newest dimension values; their intersections with other dimensions are almost entirely empty
