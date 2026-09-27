@@ -85,50 +85,66 @@ x_out = x_in + α · sublayer(x_in)     # α learnable or a fixed small value
 
 ---
 
-## Generation 2: Hyper-Connection series (2024)
+## Generation 2: Hyper-Connection series (2024–2025)
 
 ### HC (Hyper-Connection)
 
-```
-x_out = Linear(Concat(x_in, sublayer(x_in)))
+```text
+H   = (h_1, ..., h_n)^T ∈ R^{n×d}     # n parallel residual streams (expansion rate n)
+h_0 = H_pre · H                       # weighted sum of n streams → layer input
+H'  = H_res · H + H_post^T · F(h_0)   # stream mixing + output broadcast
 ```
 
-**Source:** Independently proposed [specific paper to be added]
+**Source:** Zhu et al., "Hyper-Connections" (ByteDance Seed, arXiv:2409.19606), 2024
 
 **Design-space position:**
 
 | Dimension | Value |
 |:---|:---|
-| Transmission scope | Local (within block) — still within one layer |
-| Information granularity | **Input+output group** ← first breakthrough in information granularity |
-| Weighting strategy | Fixed concat + learnable projection — group elements mixed via Linear |
+| Transmission scope | Local (adjacent layer) — but carried by n parallel streams |
+| Information granularity | **Multi-stream group (G-stream)** ← first breakthrough: n parallel residual streams, n·d per layer |
+| Weighting strategy | **Learnable stream-mixing matrix (W-matrix)** — static or dynamic |
 
 **Mechanism:**
-- No longer a scalar `x + F(x)` mix
-- Concatenates x_in and sub_out into a 2d-dimensional vector
-- Projects back to d dimensions with Linear
+- The residual stream width is expanded by n (expansion rate): input h⁰ ∈ R^d is replicated n times → hyper-hidden matrix H ∈ R^{n×d}
+- Three learnable linear mappings (static = learnable biases; dynamic = input-dependent):
+  - H_pre ∈ R^{1×n}: weighted-sum the n streams into the layer input h₀
+  - H_post ∈ R^{1×n}: broadcast the layer output F(h₀) back onto the n streams
+  - H_res ∈ R^{n×n}: mix information across the n streams (width-connections)
+- Dynamic (DHC): coefficients are predicted from H (RMSNorm → linear → tanh → scaled by small learnable factors)
+- n=1 degenerates to standard residual; the paper shows n>1 is required (the seesaw effect persists at n=1)
 
-**Key insight:** Skip connections and sublayer outputs are two different kinds of signals and should not be forced into a 1:1 mix. HC lets each layer **see both** the raw signal and the transformed signal simultaneously, and decides the mixing method with learnable Linear weights.
+**Key insight:** The residual connection is generalized from a single additive path to n parallel streams governed by learnable matrices, so the network can adjust connection strengths across depths and even rearrange layers (sequential↔parallel duality).
 
 **Limitations:**
-- In `cat(x_in, sub_out)` the two may have very different norms → numerical instability
-- Still local — operates only within one layer
+- Unconstrained H_res breaks the identity-mapping property; the composite product ∏H_res can explode/vanish at depth (training instability)
+- The n×-widened stream increases memory-access (I/O) cost roughly ∝ n
 
 ---
 
-### mHC (Constrained Hyper-Connection)
+### mHC (Manifold-Constrained Hyper-Connection)
 
+```text
+x_{l+1} = proj_{DS}(H_res) · x_l + H_post^T · F(H_pre · x_l)
+        # H_res is projected onto the doubly-stochastic manifold (Birkhoff polytope)
+        # via Sinkhorn-Knopp, restoring the identity-mapping property
 ```
-x_out = Linear(RMSNorm(Concat(x_in, sublayer(x_in))))
-```
 
-**Design-space position:** Same as HC, with one extra RMSNorm constraint inside the group.
+**Source:** Xie et al., "mHC: Manifold-Constrained Hyper-Connections" (DeepSeek-AI, arXiv:2512.24880), 2025.12
 
-**Improvements:**
-- RMSNorm after concat → controls the numerical-scale difference between `x_in` and `sub_out`
-- More stable training
+**Design-space position:** Same as HC, plus an extra constraint that projects H_res onto the doubly-stochastic manifold.
 
-**Limitation:** Still local. Does not address the information-routing problem in the depth dimension.
+**Mechanism:**
+- Same HC formulation, but H_res is entropically projected onto the Birkhoff polytope (doubly-stochastic matrices, row & column sums = 1) via the Sinkhorn-Knopp algorithm
+- Row/column sums = 1 ⇒ H_res·x is a convex combination → feature mean conserved, signal norm strictly regularized
+- Doubly-stochastic matrices are closed under multiplication ⇒ the composite ∏H_res stays well-conditioned at arbitrary depth, restoring the identity mapping
+- Plus infrastructure optimizations: kernel fusion, TileLang mixed-precision kernels, selective recomputing, DualPipe communication overlap
+
+**Improvement over HC:**
+- Restores identity mapping ⇒ stable large-scale training (HC shows a loss surge around step 12k; mHC does not)
+- Only 6.7% extra time overhead at expansion rate n=4
+
+**Limitation:** Still local (adjacent-layer) transmission; does not address cross-depth information routing.
 
 ---
 
@@ -164,7 +180,7 @@ Block k output = Σ_{i=1}^{k-1} α_i · h_i    where α_i = softmax(Q_k · K_i /
 **Limitations:**
 - Full AttnRes: O(L²) depth-attention computation
 - Block AttnRes: reduced to O(B²) but still needs extra communication
-- Information granularity reverts to a single output — does not use HC's "group signal" advantage
+- Information granularity reverts to a single output — does not use HC's multi-stream advantage
 
 ---
 
@@ -181,10 +197,10 @@ Block k output = Σ_{i=1}^{k-1} α_i · h_i    where α_i = softmax(Q_k · K_i /
   │      x + α·F(x) —— learnable scalar weight
   │
  2024 ── HC (Hyper-Connection)
-  │      Linear(Concat(x, F(x))) —— group concat + projection
+  │      n parallel streams + learnable matrix (H_pre/H_post/H_res) —— multi-stream mixing
   │
- 2024 ── mHC (Constrained HC)
-  │      Linear(RMSNorm(Concat(x, F(x)))) —— group concat + normalization + projection
+ 2025 ── mHC (Manifold-Constrained HC)
+  │      HC + project H_res onto doubly-stochastic manifold (Sinkhorn-Knopp) —— restore identity mapping
   │
  2026 ── Attention Residuals (Kimi)     ◄── state of the art to date
   │      softmax attention over all prior layers
@@ -203,7 +219,7 @@ Looking closely at the timeline, the evolution of residual layers follows a clea
 | Generational leap | Dimension broken through | Concrete change |
 |:---|:---|:---|
 | Pre-LN → ReZero | Weighting strategy | Fixed 1.0 → learnable scalar |
-| ReZero → HC | Information granularity | Single output → input+output group |
-| HC → AttnRes | Transmission scope + weighting strategy | Local → global + scalar → attention |
+| ReZero → HC | Information granularity + weighting | Single stream → n parallel streams; scalar → learnable matrix |
+| HC → AttnRes | Transmission scope + weighting strategy | Local → global; matrix → content attention |
 
-**Key finding:** No generation has broken through two dimensions at once. This means grid points combining multiple dimensions are almost all empty — which is exactly the entry point for inferring next-generation schemes.
+**Key finding:** Most generational leaps push one dimension to a new stage — HC is the exception (granularity + weighting at once). Yet grid points that combine *multiple* dimensions simultaneously (e.g., multi-stream + global scope) are almost entirely empty — which is exactly the entry point for inferring next-generation schemes.

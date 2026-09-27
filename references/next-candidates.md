@@ -6,42 +6,42 @@
 
 ---
 
-## Candidate A1: AttnGroup
+## Candidate A1: AttnStream
 
-**Grid coordinates:** (L-All, G2, W-attn)
+**Grid coordinates:** (L-All, G-stream, W-attn)
 
-**Methodology:** Orthogonal dimension hybridization — HC's "group signal" × AttnRes's "global attention"
+**Methodology:** Orthogonal dimension hybridization — HC's "multi-stream" × AttnRes's "global attention"
 
 ### Motivation
 
-AttnRes lets each layer selectively attend to all prior layers, but each prior layer exposes only a **single final output** (G1 granularity). HC proved that within each Block there are two different kinds of information — the "raw signal" and the "transformed signal". Why not let depth attention also select these two kinds of signals separately?
+AttnRes lets each layer selectively attend to all prior layers, but each prior layer exposes only a **single final output** (G1 granularity). HC proved that a layer can carry **n parallel residual streams** (hyper-hidden H ∈ R^{n×d}) instead of a single vector. Why not let depth attention select among those n streams per prior layer?
 
 ### Structure
 
 ```
 Block 1..k-1 each expose:
-  group_i = cat(h_i, sub_out_i)     ← 2d-dimensional group signal
+  stream_i = (s_{i,1}, s_{i,2}, ..., s_{i,n})     ← n parallel residual streams (n·d)
 
 Block k:
   Q_k = Proj_q(h_{k-1})              ← query for the current token
-  K_i = Proj_k_compress(group_i)     ← compress the 2d group to a d-dimensional key (optional MLA)
-  V_i = Proj_v(group_i)              ← full 2d→d value projection
+  K_i = Proj_k_compress(stream_i)    ← compress n·d streams to a d/r-dimensional key (optional MLA)
+  V_i = Proj_v(stream_i)             ← n·d → d value projection
 
-  α_i = softmax(Q_k · K_i / √d)     ← attend to each prior-layer group
+  α_i = softmax(Q_k · K_i / √d)     ← attend to each prior layer's stream group
   h_k = ffn_k(RMSNorm(attn_k(x_k) + Σ α_i · V_i))
 ```
 
 ### Efficiency comparison
 
-| Metric | AttnRes (baseline) | AttnGroup | Change |
+| Metric | AttnRes (baseline) | AttnStream | Change |
 |:---|:---:|:---:|:---:|
-| Depth-attention dim | d × d | d × 2d (no compression) / d × r (MLA compression) | +100% / — |
-| Per-layer communication | d | 2d / r+2d | +100% / depends on r |
-| Information richness | Single output | Input and output separately attendable | ↑↑ |
+| Depth-attention dim | d × d | d × n·d (no compression) / d × r (MLA compression) | +n× / — |
+| Per-layer communication | d | n·d / r+n·d | +n× / depends on r |
+| Information richness | Single output | n streams separately attendable | ↑↑ |
 
 ### Feasibility
 
-**High.** Does not depend on new technical breakthroughs; it is a direct combination of HC and AttnRes. The main engineering challenge is the compression design of the 2d-dimensional key.
+**High.** Does not depend on new technical breakthroughs; it is a direct combination of HC and AttnRes. The main engineering challenge is compressing the n·d-dimensional stream group into a key.
 
 ---
 
@@ -49,11 +49,11 @@ Block k:
 
 **Grid coordinates:** (L-All, G-N, W-attn)
 
-**Methodology:** Boundary expansion — extending from G2 to G-N
+**Methodology:** Boundary expansion — extending from G-stream to G-N
 
 ### Motivation
 
-AttnGroup exposes two groups of signals: [input, output]. But inside a Block there are actually richer intermediate states:
+AttnStream exposes n parallel streams. But inside a Block there are also richer intermediate states:
 
 ```
 Block i's multi-stage states:
@@ -97,7 +97,7 @@ Block k:
 
 ---
 
-## Candidate B1: AttnGroup+MLA
+## Candidate B1: AttnStream+MLA
 
 **Grid coordinates:** (L-All, G-compress, W-attn)
 
@@ -105,7 +105,7 @@ Block k:
 
 ### Motivation
 
-AttnGroup's bottleneck is: the group signal each layer must pass to later layers is 2d or N·d dimensions, causing a communication explosion.
+AttnStream's bottleneck is: the stream group each layer must pass to later layers is n·d (or N·d for multi-stage) dimensions, causing a communication explosion.
 
 MLA (Multi-head Latent Attention) has already proven in the sequence dimension that "compress key/value while keeping full attention quality" is feasible. The same idea applies to the depth dimension — **transmit the compressed group key, keep the full group value**.
 
@@ -113,8 +113,8 @@ MLA (Multi-head Latent Attention) has already proven in the sequence dimension t
 
 ```
 # Each Block i, after finishing computation, exposes two things:
-group_key_i = Proj_compress([stage_0...stage_N])      # N·d → r (r << d, for depth attention)
-group_val_i = Proj_v([stage_0...stage_N])             # N·d → d (full value, via pipeline cache)
+group_key_i = Proj_compress([s_{i,1}...s_{i,n}])      # n·d → r (r << d, for depth attention)
+group_val_i = Proj_v([s_{i,1}...s_{i,n}])             # n·d → d (full value, via pipeline cache)
 
 # When Block k computes:
 Q_k = Proj_q(h_{k-1})
@@ -128,13 +128,13 @@ h_k = ffn_k(rmsnorm(attn_k(x_k) + Σ α_i · V_i))
 
 ### Efficiency comparison
 
-| Metric | AttnRes | AttnGroup+MLA | Change |
+| Metric | AttnRes | AttnStream+MLA | Change |
 |:---|:---:|:---:|:---:|
 | Depth-attention compute | O(L·d²) | O(L·r²) | ↓ when r < d |
 | Per-layer broadcast communication | O(d) | O(r) (key only) | ↓ when r < d |
 | Pipeline cache communication | O(d) | O(d) (value via cache) | = |
 | Total communication | O(L·d) | O(L·r + L·d) ≈ O(L·d) | ≈ |
-| Information richness | 1× | N× (multi-stage still attendable after compression) | ↑↑ |
+| Information richness | 1× | n× (multi-stream still attendable after compression) | ↑↑ |
 
 ### Feasibility
 
@@ -257,7 +257,7 @@ h_k = Σ_{i∈TopK_depth} α_i · MoE_{TopM}(h_i)
 
 | Priority | Candidate | Rationale |
 |:---:|:---|:---|
-| **🥇** | B1 AttnGroup+MLA | Highest feasibility, largest efficiency gain, core technique already validated |
+| **🥇** | B1 AttnStream+MLA | Highest feasibility, largest efficiency gain, core technique already validated |
 | **🥈** | C1 Sparse Depth Routing | Rich MoE-community experience; natural follow-up direction |
 | **🥉** | C2 SSM-Depth | Huge complexity advantage, but needs further maturation in the SSM community |
 | 4 | A2 AttnGroup-N | Strongest expressiveness, but high compression requirement |
